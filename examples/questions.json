@@ -1,0 +1,55 @@
+[
+  {
+    "id": "q001",
+    "question": "What was total revenue last month?",
+    "category": "simple_lookup",
+    "expected_behavior": "Returns the requested metric from the intended Genie Agent.",
+    "expected_route": "genie_sales",
+    "ground_truth_notes": "Human-review notes or expected values; do not place secrets here."
+  },
+  {
+    "id": "q002",
+    "question": "Show weekly revenue for the last 8 weeks.",
+    "category": "aggregation_time",
+    "expected_behavior": "Applies a date filter and returns a standard weekly KPI.",
+    "expected_route": "genie_sales"
+  },
+  {
+    "id": "q003",
+    "question": "Break that down by region.",
+    "category": "follow_up",
+    "expected_behavior": "Reuses conversation state from q002 and returns a regional breakdown.",
+    "follow_up_to": "q002"
+  },
+  {
+    "id": "q004",
+    "question": "How many support tickets were opened yesterday?",
+    "category": "routing",
+    "expected_behavior": "Supervisor routes to the support Genie Agent, not sales.",
+    "expected_route": "genie_support"
+  },
+  {
+    "id": "q005",
+    "question": "What is the capital of France?",
+    "category": "out_of_scope",
+    "expected_behavior": "Supervisor declines or clarifies without unnecessary tool calls."
+  },
+  {
+    "id": "q006",
+    "question": "How are we doing this quarter?",
+    "category": "ambiguous",
+    "expected_behavior": "Asks a clarifying question rather than forcing an execution."
+  },
+  {
+    "id": "q007",
+    "question": "Compare revenue and support volume trends and summarize the relationship.",
+    "category": "multi_step_synthesis",
+    "expected_behavior": "Agent-mode multi-step synthesis across two sources; use only if Agent Mode is in scope."
+  },
+  {
+    "id": "q008",
+    "question": "What was total revenue last month?",
+    "category": "repeat",
+    "expected_behavior": "Repeat of q001 to estimate run-to-run variance; run once, not as a load test."
+  }
+]

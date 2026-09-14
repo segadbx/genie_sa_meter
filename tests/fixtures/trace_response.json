@@ -1,0 +1,46 @@
+{
+  "info": {
+    "trace_id": "tr-0001",
+    "token_usage": {
+      "input_tokens": 1200,
+      "output_tokens": 300,
+      "total_tokens": 1500
+    }
+  },
+  "data": {
+    "spans": [
+      {
+        "name": "supervisor_planner",
+        "span_type": "CHAT_MODEL",
+        "attributes": {
+          "mlflow.chat.tokenUsage": {
+            "input_tokens": 800,
+            "output_tokens": 150,
+            "total_tokens": 950
+          }
+        }
+      },
+      {
+        "name": "genie_synthesis",
+        "span_type": "LLM",
+        "attributes": {
+          "mlflow.chat.tokenUsage": {
+            "input_tokens": 400,
+            "output_tokens": 150,
+            "total_tokens": 550
+          }
+        }
+      },
+      {
+        "name": "genie_sql_tool",
+        "span_type": "TOOL",
+        "attributes": {}
+      },
+      {
+        "name": "mcp_lookup",
+        "span_type": "TOOL",
+        "attributes": {}
+      }
+    ]
+  }
+}

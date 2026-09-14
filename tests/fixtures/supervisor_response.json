@@ -1,0 +1,7 @@
+{
+  "note": "Illustrative Supervisor response shape for future adapter implementation only. The Supervisor adapter is a customer boundary; the harness does not assume this schema.",
+  "response_id": "sup_resp_1",
+  "trace_id": "tr-sup-0001",
+  "output": "Routed to genie_sales; total revenue last month was $1,240,500.",
+  "route": "genie_sales"
+}

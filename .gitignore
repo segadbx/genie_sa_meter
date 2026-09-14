@@ -1,0 +1,40 @@
+# Planning / internal reference docs — kept out of the shareable source bundle
+/docs/ref/
+.isaac/
+
+# Secrets and customer-specific configuration — never commit.
+# Anchored to the repo root so the shareable examples/ copies are NOT ignored.
+.env
+/config.yaml
+/questions.json
+config.local.*
+*.local.yaml
+
+# Run outputs / evidence — never commit customer results or raw traces
+outputs/*
+!outputs/.gitkeep
+redacted_results.json
+*.results.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env.venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

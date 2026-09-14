@@ -1,0 +1,45 @@
+# Example configuration for the Genie + Supervisor benchmark harness.
+#
+# Copy to config.yaml and fill in placeholders. NEVER place a PAT, client secret, or
+# bearer token in this file — the harness refuses to start if it detects credentials.
+# Authentication is resolved from the environment or the named Databricks profile.
+
+workspace_host: "https://<workspace>.cloud.databricks.com"
+databricks_profile: "<profile>"        # or set use_default_auth: true (mutually exclusive)
+environment: "customer-session-1"
+
+experiment_id: "<mlflow-experiment-id>"
+genie_space_id: "<genie-space-or-agent-id>"
+
+# Customer-supplied invocation boundaries. Required only if the matching variant is enabled.
+supervisor_target: "<customer-supplied-endpoint-or-resource>"
+mcp_target: "<customer-supplied-mcp-connection-or-url>"
+
+variants:
+  - direct_genie
+  - supervisor
+  - supervisor_mcp
+
+questions_file: "questions.json"
+repetitions: 1
+max_questions: 10
+max_runtime_seconds: 3600
+request_timeout_seconds: 300
+poll_interval_seconds: 2
+concurrency: 1                         # must be 1 unless allow_concurrency: true
+# allow_concurrency: true              # explicit override (not recommended for first session)
+
+output_dir: "outputs"
+
+# Privacy: keep false to store only hashes and lengths of responses/SQL.
+store_response_text: false
+
+# Optional: only if the customer has approved UC trace storage for this surface.
+# trace_destination:
+#   catalog_name: "<catalog>"
+#   schema_name: "<schema>"
+#   table_prefix: "<prefix>"
+
+# Optional: customer-approved price sheet. Only then is an estimated cost computed.
+# price_sheet:
+#   total_per_1k: 0.0
