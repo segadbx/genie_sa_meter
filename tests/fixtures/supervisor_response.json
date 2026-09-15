@@ -1,7 +1,26 @@
 {
-  "note": "Illustrative Supervisor response shape for future adapter implementation only. The Supervisor adapter is a customer boundary; the harness does not assume this schema.",
-  "response_id": "sup_resp_1",
-  "trace_id": "tr-sup-0001",
-  "output": "Routed to genie_sales; total revenue last month was $1,240,500.",
-  "route": "genie_sales"
+  "note": "Realistic Agent Bricks Multi-Agent Supervisor (Responses API) response used only by offline adapter-normalization tests. No live call is made.",
+  "id": "resp_sup_1",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {"type": "output_text", "text": "Routed to the production agent. Total oil production last month was 412,300 bbl."}
+      ]
+    }
+  ],
+  "usage": {"input_tokens": 1800, "output_tokens": 260, "total_tokens": 2060},
+  "databricks_output": {
+    "trace": {
+      "info": {"trace_id": "tr-sup-0001"},
+      "data": {
+        "spans": [
+          {"name": "supervisor_planner", "span_type": "CHAT_MODEL", "attributes": {"mlflow.chat.tokenUsage": {"input_tokens": 1200, "output_tokens": 180, "total_tokens": 1380}}},
+          {"name": "genie_production_tool", "span_type": "TOOL", "attributes": {}},
+          {"name": "genie_synthesis", "span_type": "LLM", "attributes": {"mlflow.chat.tokenUsage": {"input_tokens": 600, "output_tokens": 80, "total_tokens": 680}}}
+        ]
+      }
+    }
+  }
 }

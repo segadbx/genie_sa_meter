@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from tests.conftest import load_fixture, valid_config_dict
 
-from genie_benchmark.adapters.base import AgentAdapter
+from genie_benchmark.adapters.base import AgentAdapter, PrerequisiteNotConfigured
 from genie_benchmark.adapters.direct_genie import DirectGenieAdapter
 from genie_benchmark.adapters.supervisor import SupervisorAdapter
 from genie_benchmark.adapters.supervisor_mcp import SupervisorMcpAdapter
 from genie_benchmark.config import parse_config
-from genie_benchmark.models import BenchmarkQuestion, InvocationResult, RunContext, RunStatus
+from genie_benchmark.models import (
+    BenchmarkQuestion,
+    InvocationResult,
+    RunContext,
+    RunStatus,
+    TokenSource,
+)
 
 _QUESTION = BenchmarkQuestion(
     id="q001", question="revenue?", category="simple_lookup", expected_behavior="metric"
@@ -46,20 +52,47 @@ def test_direct_genie_adapter_conforms() -> None:
     assert result.status == RunStatus.COMPLETED
 
 
+def _raise_prerequisite(*_a, **_k):
+    raise PrerequisiteNotConfigured("target not configured")
+
+
+def test_supervisor_adapter_normalizes_responses_api() -> None:
+    config = parse_config(valid_config_dict(variants=["supervisor"], supervisor_target="res/1"))
+    caller = lambda q, t: load_fixture("supervisor_response.json")  # noqa: E731
+    adapter = SupervisorAdapter(config, caller=caller)
+    assert isinstance(adapter, AgentAdapter)
+    result = adapter.invoke(_QUESTION, _ctx())
+    _assert_normalized(result, "supervisor")
+    assert result.status == RunStatus.COMPLETED
+    assert result.trace_id == "tr-sup-0001"
+    assert result.token_usage.source == TokenSource.PROVIDER_REPORTED
+    assert result.token_usage.total_tokens == 2060
+
+
 def test_supervisor_adapter_reports_prerequisite() -> None:
     config = parse_config(valid_config_dict(variants=["supervisor"], supervisor_target="res/1"))
-    adapter = SupervisorAdapter(config)
-    assert isinstance(adapter, AgentAdapter)
+    adapter = SupervisorAdapter(config, caller=_raise_prerequisite)
     result = adapter.invoke(_QUESTION, _ctx())
     _assert_normalized(result, "supervisor")
     assert result.status == RunStatus.NOT_CONFIGURED
     assert "not configured" in (result.error or "").lower()
 
 
+def test_supervisor_mcp_adapter_normalizes_result() -> None:
+    config = parse_config(valid_config_dict(variants=["supervisor_mcp"], mcp_target="mcp/1"))
+    caller = lambda q, t: load_fixture("supervisor_mcp_response.json")  # noqa: E731
+    adapter = SupervisorMcpAdapter(config, caller=caller)
+    assert isinstance(adapter, AgentAdapter)
+    result = adapter.invoke(_QUESTION, _ctx())
+    _assert_normalized(result, "supervisor_mcp")
+    assert result.status == RunStatus.COMPLETED
+    assert result.counts.get("mcp_call_count") == 1
+    assert result.token_usage.source == TokenSource.UNAVAILABLE
+
+
 def test_supervisor_mcp_adapter_reports_prerequisite() -> None:
     config = parse_config(valid_config_dict(variants=["supervisor_mcp"], mcp_target="mcp/1"))
-    adapter = SupervisorMcpAdapter(config)
-    assert isinstance(adapter, AgentAdapter)
+    adapter = SupervisorMcpAdapter(config, caller=_raise_prerequisite)
     result = adapter.invoke(_QUESTION, _ctx())
     _assert_normalized(result, "supervisor_mcp")
     assert result.status == RunStatus.NOT_CONFIGURED

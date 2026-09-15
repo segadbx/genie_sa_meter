@@ -36,6 +36,32 @@ uv sync                      # installs pinned runtime + dev dependencies from u
 python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]"
 ```
 
+## 5-minute demo (bootstrap all Databricks resources)
+
+Don't have a Genie space, data, or a supervisor to point at yet? The demo bootstrap creates
+everything for you and writes a ready-to-run `config.yaml` + `questions.json`. It lands a
+small synthetic **oil & gas** upstream production/maintenance dataset in Unity Catalog (only
+to give Genie something to query), builds two Genie spaces (production + maintenance), an
+Agent Bricks Multi-Agent Supervisor over them, and an MLflow experiment.
+
+```bash
+uv sync
+cp bootstrap.example.yaml bootstrap.yaml     # names, catalog/schema, warehouse reuse-or-create, data scale
+uv run benchmark bootstrap --config bootstrap.yaml --profile <your-databricks-profile>
+# → creates resources, then writes config.yaml + questions.json
+uv run benchmark preflight --config config.yaml
+uv run benchmark run --config config.yaml
+```
+
+All settings (catalog/schema, warehouse, data volume, space names, whether to build the
+supervisor, what to emit) come from `bootstrap.yaml`; authentication comes from `--profile`
+(never from a file). `uv run benchmark bootstrap --config bootstrap.yaml --profile <p>
+--teardown` best-effort removes the demo resources. See `bootstrap.example.yaml` for every
+setting.
+
+> The bootstrap is the only part of this tool that **creates** Databricks resources; it is
+> isolated in `src/genie_benchmark/bootstrap/`. The benchmark core stays read-only.
+
 ## One-command local test (offline, no network)
 
 ```bash
@@ -95,10 +121,15 @@ top of the notebook, and outputs are written next to it under `outputs/`.
 
 - **`direct_genie`** is implemented against the documented Genie Conversation API
   (`start-conversation` → poll `get-message` → collect SQL/response).
-- **`supervisor`** and **`supervisor_mcp`** are **customer boundaries**. The harness does
-  not invent an API shape; these adapters report a clear prerequisite until you wire the
-  customer-approved invocation in `src/genie_benchmark/adapters/supervisor.py` and
-  `supervisor_mcp.py`. See those files for exactly what to implement.
+- **`supervisor`** queries an Agent Bricks Multi-Agent Supervisor serving endpoint
+  (Responses API). The demo bootstrap creates one and fills `supervisor_target`; for a
+  customer run, point `supervisor_target` at the approved MAS endpoint. If it is unset the
+  adapter reports a prerequisite rather than guessing an API shape.
+- **`supervisor_mcp`** reaches Genie via the managed Genie MCP server
+  (`/api/2.0/mcp/genie/<space_id>`) — it measures MCP transport overhead, not a
+  supervisor-orchestrated-over-MCP path. It needs an MCP client (`uv sync --extra bootstrap`
+  or `pip install databricks-mcp`); without one it reports its prerequisite. See
+  `src/genie_benchmark/adapters/supervisor.py` and `supervisor_mcp.py`.
 
 ## Trace and billing
 

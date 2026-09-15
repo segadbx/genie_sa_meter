@@ -1,0 +1,56 @@
+# Example settings for `benchmark bootstrap` (the demo provisioner).
+#
+# Copy to bootstrap.yaml and adjust. This file holds only non-secret names and toggles;
+# authentication comes from the Databricks profile you pass on the command line:
+#
+#   uv run benchmark bootstrap --config bootstrap.yaml --profile <your-profile>
+#
+# The bootstrap lands a small synthetic oil & gas dataset in Unity Catalog, builds two
+# Genie spaces (production + maintenance) and (optionally) an Agent Bricks Multi-Agent
+# Supervisor over them, creates an MLflow experiment, and writes a ready-to-run config.yaml
+# + questions.json. The oil & gas use case exists only to bring realistic test data into
+# Unity Catalog; every harness resource then points at that data.
+#
+# NEVER put a token/secret here — the loader refuses to start if it detects one.
+
+# Optional: resolved from the --profile if left blank.
+workspace_host: ""
+
+catalog:
+  name: "genie_bench_demo"   # simple SQL identifier
+  create: true               # false = reuse an existing catalog you already have rights to
+
+schema:
+  name: "oil_gas"
+
+warehouse:
+  reuse_id: ""               # set to reuse a specific serverless SQL warehouse id
+  create_if_missing: true    # else discover a serverless warehouse, else create one
+  name: "genie-bench-demo"
+  size: "2X-Small"
+
+data:
+  wells: 40                  # number of wells
+  days: 540                  # days of daily production history (ends on today)
+  seed: 42                   # deterministic randomness
+
+genie:
+  parent_path: ""            # default: /Workspace/Users/<you>/genie_spaces
+  production_space_name: "Upstream Production"
+  maintenance_space_name: "Upstream Maintenance"
+
+supervisor:
+  build: true                # false = skip the Multi-Agent Supervisor (direct_genie + MCP only)
+  name: "Upstream Benchmark MAS"
+
+experiment:
+  path: ""                   # default: /Users/<you>/genie-bench-demo
+
+emit:
+  config_path: "config.yaml"
+  questions_path: "questions.json"
+  environment: "oil-gas-demo"
+  variants:
+    - direct_genie
+    - supervisor
+    - supervisor_mcp

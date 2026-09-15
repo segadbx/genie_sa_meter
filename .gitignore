@@ -7,8 +7,13 @@
 .env
 /config.yaml
 /questions.json
+/bootstrap.yaml
 config.local.*
 *.local.yaml
+
+# Local MLflow tracking store created when the test suite exercises tracing
+mlflow.db
+mlruns/
 
 # Run outputs / evidence — never commit customer results or raw traces
 outputs/*

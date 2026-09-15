@@ -2,10 +2,15 @@
 
 Commands:
 
+    benchmark bootstrap --config bootstrap.yaml --profile <name> [--teardown]
     benchmark preflight --config config.yaml
     benchmark run       --config config.yaml [--dry-run] [--force]
     benchmark report    --results outputs/benchmark_results.json [--output outputs]
     benchmark redact    --input outputs/benchmark_results.json --output outputs/redacted_results.json
+
+``bootstrap`` creates the Databricks resources a live run needs (a Unity Catalog schema of
+synthetic oil & gas data, two Genie spaces, an optional Multi-Agent Supervisor, and an
+MLflow experiment), then writes a ready-to-run ``config.yaml`` and ``questions.json``.
 
 ``run`` fails closed if preflight has not passed for the current configuration, unless
 ``--force`` is supplied. ``--force`` requires an interactive confirmation and is disabled
@@ -161,10 +166,24 @@ def cmd_redact(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bootstrap(args: argparse.Namespace) -> int:
+    from .bootstrap import load_bootstrap_settings, run_bootstrap
+
+    settings = load_bootstrap_settings(args.config)
+    run_bootstrap(settings, args.profile, teardown=args.teardown, log=lambda m: print(m))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="benchmark", description=__doc__)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_boot = sub.add_parser("bootstrap", help="Provision the demo Databricks resources and emit config + questions.")
+    p_boot.add_argument("--config", required=True, help="Bootstrap settings file (bootstrap.yaml).")
+    p_boot.add_argument("--profile", default=None, help="Databricks profile to provision into.")
+    p_boot.add_argument("--teardown", action="store_true", help="Best-effort removal of the demo resources.")
+    p_boot.set_defaults(func=cmd_bootstrap)
 
     p_pre = sub.add_parser("preflight", help="Validate configuration and questions.")
     p_pre.add_argument("--config", required=True)
@@ -197,6 +216,14 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, QuestionValidationError) as exc:
         _eprint(f"error: {exc}")
         return 2
+    except Exception as exc:  # bootstrap settings/provisioning errors carry actionable messages
+        from .bootstrap.provision import BootstrapError
+        from .bootstrap.settings import BootstrapSettingsError
+
+        if isinstance(exc, (BootstrapSettingsError, BootstrapError)):
+            _eprint(f"error: {exc}")
+            return 2
+        raise
 
 
 if __name__ == "__main__":  # pragma: no cover

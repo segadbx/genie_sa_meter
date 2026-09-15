@@ -59,6 +59,29 @@ print("repo root:", _repo_root)
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## 1b. (Optional) Bootstrap the demo resources
+# MAGIC No Genie space / data yet? Run the demo bootstrap using the notebook's ambient
+# MAGIC credentials (profile left as `None`). It lands a synthetic oil & gas dataset in Unity
+# MAGIC Catalog, builds two Genie spaces + an optional Multi-Agent Supervisor + an MLflow
+# MAGIC experiment, and writes `config.yaml` + `questions.json` next to the repo root. Set
+# MAGIC `RUN_BOOTSTRAP = True` to run it, then copy the printed ids into the widgets below.
+# MAGIC Skip this cell if you already have a Genie space id.
+
+# COMMAND ----------
+
+RUN_BOOTSTRAP = False  # set True to provision the demo resources with ambient credentials
+
+if RUN_BOOTSTRAP:
+    from genie_benchmark.bootstrap import load_bootstrap_settings, run_bootstrap
+
+    _bootstrap_file = os.path.join(_repo_root, "bootstrap.yaml")
+    _settings = load_bootstrap_settings(_bootstrap_file)
+    _summary = run_bootstrap(_settings, None)  # None profile => notebook's ambient auth
+    print(_summary)
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## 2. Parameters
 # MAGIC Fill these in with widgets. **Never** put a token or secret here — the notebook uses
 # MAGIC the notebook's ambient Databricks credentials (a test identity).

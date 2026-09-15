@@ -25,6 +25,13 @@ dev = [
     "mypy>=1.11.0,<2.0.0",
     "types-PyYAML>=6.0.0",
 ]
+# Optional extra for the demo bootstrap's supervisor_mcp path. The core adapters and the
+# bootstrap itself use only databricks-sdk (already a runtime dep) via the SDK's REST client
+# and the `databricks` CLI; this MCP client is needed only to exercise the managed Genie MCP
+# transport for the supervisor_mcp variant. Without it, that variant reports its prerequisite.
+bootstrap = [
+    "databricks-mcp>=0.1.0",
+]
 
 [project.scripts]
 benchmark = "genie_benchmark.cli:main"
@@ -38,6 +45,9 @@ packages = ["src/genie_benchmark"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Put the repo root on sys.path so `tests.conftest` imports work under `uv run pytest`
+# (which, unlike `python -m pytest`, does not add the CWD automatically).
+pythonpath = ["."]
 # Integration tests are opt-in and skipped unless a customer supplies config + confirmation.
 markers = [
     "integration: opt-in live tests; skipped unless GENIE_BENCHMARK_INTEGRATION=1 and a config is supplied",
@@ -68,5 +78,5 @@ no_implicit_optional = true
 # mlflow and databricks-sdk are optional, lazily-imported runtime dependencies; do not
 # fail type checking when their stubs are unavailable.
 [[tool.mypy.overrides]]
-module = ["mlflow.*", "databricks.*"]
+module = ["mlflow.*", "databricks.*", "databricks_mcp.*"]
 ignore_missing_imports = true

@@ -3,6 +3,32 @@
 All notable changes to the adapter contract and the report schema are recorded here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **Demo bootstrap** (`benchmark bootstrap --config bootstrap.yaml --profile <name>`, and
+  `scripts/bootstrap_demo.py`): config-driven provisioner (`src/genie_benchmark/bootstrap/`)
+  that creates the Databricks resources a live run needs and emits a ready-to-run
+  `config.yaml` + `questions.json`. It lands a synthetic **oil & gas** upstream
+  production/maintenance dataset in Unity Catalog (via the SQL Statement Execution API, no
+  cluster), builds two Genie spaces (production + maintenance), optionally an Agent Bricks
+  Multi-Agent Supervisor over them, and an MLflow experiment. `--teardown` best-effort
+  removes the demo resources. `bootstrap.example.yaml` documents every setting.
+
+### Changed (adapter contract)
+
+- `supervisor` adapter is now implemented against a MAS serving endpoint (Responses API,
+  `databricks_options.return_trace`), normalizing text, provider-reported `usage` (falling
+  back to child-span token sums from the returned trace), and the trace id. It still reports
+  a prerequisite when `supervisor_target` is unset.
+- `supervisor_mcp` adapter now reaches Genie via the managed Genie MCP server
+  (`/api/2.0/mcp/genie/<space_id>`) by tool discovery, recording MCP call count, tool name,
+  and payload sizes. Token usage is `unavailable` (Genie-over-MCP reports none). It reports a
+  prerequisite when no MCP client is installed rather than hand-rolling the protocol.
+- Both adapters accept an injectable `caller` so their normalizers are unit-tested from
+  fixtures with no live calls.
+
 ## [0.1.0] - 2026-09-14
 
 ### Added

@@ -1,0 +1,10 @@
+{
+  "note": "Normalized managed-Genie-MCP tool result used only by offline adapter-normalization tests. No live call is made.",
+  "response_text": "37 maintenance work orders were opened last week.",
+  "generated_sql": "SELECT COUNT(*) AS work_orders FROM genie_bench_demo.oil_gas.maintenance_events WHERE event_date >= date_sub(current_date(), 7)",
+  "tool_name": "genie_query",
+  "mcp_server": "https://example.cloud.databricks.com/api/2.0/mcp/genie/space_001",
+  "request_bytes": 64,
+  "response_bytes": 49,
+  "tool_status": "ok"
+}
