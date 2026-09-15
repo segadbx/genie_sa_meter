@@ -20,7 +20,7 @@ from typing import Any
 from . import __version__
 from .config import Config
 from .models import BenchmarkQuestion, InvocationResult, RunContext
-from .tracing import benchmark_span
+from .tracing import benchmark_span, configure_mlflow_tracing
 
 # Adapter factory: variant name -> callable building an AgentAdapter for that variant.
 AdapterFactory = Callable[[Config], Any]
@@ -52,6 +52,7 @@ class RunMetadata:
     status: str = "running"
     stop_reason: str | None = None
     counts: dict[str, int] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +67,7 @@ class RunMetadata:
             "status": self.status,
             "stop_reason": self.stop_reason,
             "counts": self.counts,
+            "warnings": self.warnings,
         }
 
 
@@ -167,7 +169,18 @@ def run_benchmark(
         variants=config.variants,
         started_at=utc_now_iso(),
     )
+    # Point MLflow at the workspace experiment before any span opens; record any
+    # degradation as a run-level warning instead of silently dropping traces.
+    metadata.warnings.extend(configure_mlflow_tracing(config))
     store = ResultStore(results_path, metadata)
+
+    # Deduplicate per-request span degradations into one warning apiece.
+    seen_span_warnings: set[str] = set()
+
+    def _record_span_degraded(reason: str) -> None:
+        if reason not in seen_span_warnings:
+            seen_span_warnings.add(reason)
+            metadata.warnings.append(reason)
 
     plan = _plan(questions, config.variants, config.repetitions, config.max_questions)
     # conversation ids keyed by (question_id, variant) for follow-up reuse.
@@ -215,7 +228,9 @@ def run_benchmark(
                 "conversation_mode": "follow_up" if question.is_follow_up else "fresh",
                 "redaction_policy": context.redaction_policy,
             }
-            with benchmark_span("benchmark_run", span_attrs):
+            with benchmark_span(
+                "benchmark_run", span_attrs, on_degraded=_record_span_degraded
+            ):
                 result = adapter.invoke(question, context)
 
             store.add(result)

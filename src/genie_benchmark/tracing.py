@@ -16,10 +16,13 @@ Two concerns live here:
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, Any
 
 from .models import TokenSource, TokenUsage
+
+if TYPE_CHECKING:
+    from .config import Config
 
 # Span-attribute keys that MLflow / common providers use for per-span token usage.
 _SPAN_USAGE_KEYS = (
@@ -205,23 +208,96 @@ def count_calls(trace: dict[str, Any]) -> dict[str, int]:
     return {"llm_call_count": llm, "tool_call_count": tool, "mcp_call_count": mcp}
 
 
-@contextlib.contextmanager
-def benchmark_span(name: str, attributes: dict[str, Any]) -> Iterator[Any]:
-    """Open an MLflow span for the harness boundary, degrading gracefully if unavailable.
+def configure_mlflow_tracing(config: Config) -> list[str]:
+    """Point MLflow at the Databricks workspace + experiment so traces are exported there.
 
-    MLflow is imported lazily; if it is not installed or no tracking backend is
-    configured, the context still runs so a benchmark can proceed (with a warning left to
-    the caller). Only non-sensitive attributes should be passed here.
+    This is the single runtime hook that makes harness spans land in the configured
+    experiment. Without it, ``mlflow.start_span`` writes to a *local* ``./mlruns`` file
+    store (when run off-platform) and nothing reaches the workspace. It is safe to call on
+    Databricks too: an already-``databricks`` tracking URI is left untouched, so a profile
+    that only exists on a laptop never clobbers the notebook's working default.
+
+    Returns a list of human-readable warnings describing any degradation (MLflow missing,
+    no experiment configured, or a setup failure). An empty list means tracing is wired up.
+    All failures are captured as warnings rather than raised — tracing must never abort a
+    benchmark.
     """
     try:
         import mlflow  # noqa: PLC0415  (lazy import by design)
+    except Exception as exc:  # pragma: no cover - exercised only when MLflow is absent
+        return [f"tracing_disabled: mlflow is not importable ({exc}); no traces will be recorded."]
 
-        with mlflow.start_span(name=name) as span:
-            try:
-                span.set_attributes(attributes)
-            except Exception:  # pragma: no cover - attribute API variance
-                pass
-            yield span
-    except Exception:
-        # No MLflow backend available; run without a span rather than failing the request.
+    warnings: list[str] = []
+    try:
+        # Is MLflow already talking to a Databricks backend? On a Databricks notebook the
+        # default tracking URI is already 'databricks', which we must not override with a
+        # 'databricks://<profile>' that does not exist in that runtime.
+        current = str(mlflow.get_tracking_uri() or "")
+        on_databricks = current.startswith("databricks")
+
+        if not on_databricks and config.databricks_profile:
+            # Running off-platform with a named profile: point at that workspace.
+            mlflow.set_tracking_uri(f"databricks://{config.databricks_profile}")
+            on_databricks = True
+
+        if not on_databricks:
+            # No profile and not on a Databricks backend: leave the local store in place
+            # rather than force a credential-less workspace connection that would hang.
+            return [
+                "tracing_local_only: no databricks_profile configured and MLflow is not on "
+                "a Databricks backend; harness traces stay in the local ./mlruns store and "
+                "will not reach the workspace experiment."
+            ]
+
+        if config.experiment_id:
+            mlflow.set_experiment(experiment_id=config.experiment_id)
+        else:
+            warnings.append(
+                "tracing_experiment_unset: no experiment_id configured; traces would land "
+                "in the default experiment rather than a dedicated one."
+            )
+    except Exception as exc:
+        return [
+            "tracing_setup_failed: could not configure MLflow tracking "
+            f"({exc}); traces may not reach the workspace experiment."
+        ]
+    return warnings
+
+
+@contextlib.contextmanager
+def benchmark_span(
+    name: str,
+    attributes: dict[str, Any],
+    *,
+    on_degraded: Callable[[str], None] | None = None,
+) -> Iterator[Any]:
+    """Open an MLflow span for the harness boundary, degrading gracefully if unavailable.
+
+    MLflow is imported lazily; if it is not installed or the span cannot be opened, the
+    context still runs so a benchmark can proceed. Rather than swallow that silently, the
+    reason is reported via ``on_degraded`` (when supplied) so the caller can record it as a
+    run-level warning. Only non-sensitive attributes should be passed here.
+    """
+    try:
+        import mlflow  # noqa: PLC0415  (lazy import by design)
+    except Exception as exc:  # pragma: no cover - exercised only when MLflow is absent
+        if on_degraded is not None:
+            on_degraded(f"span_skipped: mlflow is not importable ({exc}).")
         yield None
+        return
+
+    try:
+        span_cm = mlflow.start_span(name=name)
+    except Exception as exc:
+        # No tracking backend / tracing unavailable; run without a span rather than failing.
+        if on_degraded is not None:
+            on_degraded(f"span_skipped: mlflow.start_span failed ({exc}).")
+        yield None
+        return
+
+    with span_cm as span:
+        try:
+            span.set_attributes(attributes)
+        except Exception:  # pragma: no cover - attribute API variance
+            pass
+        yield span

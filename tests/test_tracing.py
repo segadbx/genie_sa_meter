@@ -1,15 +1,56 @@
-"""Trace normalization tests: trace-level usage, child-span sums, missing usage, conflicts."""
+"""Trace normalization tests: trace-level usage, child-span sums, missing usage, conflicts.
+
+Also covers the runtime tracing setup (``configure_mlflow_tracing``) and the graceful
+degradation reporting in ``benchmark_span``.
+"""
 
 from __future__ import annotations
 
-from tests.conftest import load_fixture
+import sys
+import types
 
+import pytest
+from tests.conftest import load_fixture, valid_config_dict
+
+from genie_benchmark.config import parse_config
 from genie_benchmark.models import TokenSource
 from genie_benchmark.tracing import (
+    benchmark_span,
+    configure_mlflow_tracing,
     count_calls,
     normalize_token_usage,
     sum_child_span_tokens,
 )
+
+
+class _FakeMlflow(types.ModuleType):
+    """A stand-in for the ``mlflow`` module recording tracking-uri / experiment calls."""
+
+    def __init__(self, tracking_uri: str = "file:///tmp/mlruns") -> None:
+        super().__init__("mlflow")
+        self._tracking_uri = tracking_uri
+        self.set_tracking_uri_calls: list[str] = []
+        self.set_experiment_calls: list[str] = []
+
+    def get_tracking_uri(self) -> str:
+        return self._tracking_uri
+
+    def set_tracking_uri(self, uri: str) -> None:
+        self.set_tracking_uri_calls.append(uri)
+        self._tracking_uri = uri
+
+    def set_experiment(self, experiment_name=None, experiment_id=None):  # noqa: ANN001
+        self.set_experiment_calls.append(experiment_id or experiment_name)
+
+
+@pytest.fixture
+def fake_mlflow(monkeypatch: pytest.MonkeyPatch):
+    def _install(uri: str = "file:///tmp/mlruns") -> _FakeMlflow:
+        fake = _FakeMlflow(uri)
+        monkeypatch.setitem(sys.modules, "mlflow", fake)
+        return fake
+
+    return _install
 
 
 def test_trace_level_preferred_when_present() -> None:
@@ -88,3 +129,95 @@ def test_count_calls() -> None:
     assert counts["llm_call_count"] == 2
     assert counts["tool_call_count"] == 2
     assert counts["mcp_call_count"] == 1  # "mcp_lookup" span name
+
+
+# --- configure_mlflow_tracing -----------------------------------------------------------
+
+
+def test_configure_points_local_uri_at_workspace_and_experiment(fake_mlflow) -> None:
+    fake = fake_mlflow("file:///tmp/mlruns")  # off-platform default
+    config = parse_config(
+        valid_config_dict(databricks_profile="FEVM-SANDBOX-AZURE", experiment_id="719529908095423")
+    )
+    warnings = configure_mlflow_tracing(config)
+    assert warnings == []
+    assert fake.set_tracking_uri_calls == ["databricks://FEVM-SANDBOX-AZURE"]
+    assert fake.set_experiment_calls == ["719529908095423"]
+
+
+def test_configure_does_not_override_databricks_uri(fake_mlflow) -> None:
+    # On a Databricks notebook the tracking URI is already 'databricks'; a laptop-only
+    # profile must not clobber it.
+    fake = fake_mlflow("databricks")
+    config = parse_config(
+        valid_config_dict(databricks_profile="FEVM-SANDBOX-AZURE", experiment_id="42")
+    )
+    warnings = configure_mlflow_tracing(config)
+    assert warnings == []
+    assert fake.set_tracking_uri_calls == []  # left untouched
+    assert fake.set_experiment_calls == ["42"]
+
+
+def test_configure_warns_when_experiment_unset(fake_mlflow) -> None:
+    fake_mlflow("file:///tmp/mlruns")
+    config = parse_config(valid_config_dict(databricks_profile="FEVM-SANDBOX-AZURE"))
+    warnings = configure_mlflow_tracing(config)
+    assert any("experiment_unset" in w for w in warnings)
+
+
+def test_configure_warns_when_mlflow_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fail(name, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if name == "mlflow":
+            raise ImportError("no mlflow here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fail)
+    monkeypatch.delitem(sys.modules, "mlflow", raising=False)
+    config = parse_config(valid_config_dict(experiment_id="1"))
+    warnings = configure_mlflow_tracing(config)
+    assert len(warnings) == 1
+    assert "tracing_disabled" in warnings[0]
+
+
+# --- benchmark_span degradation reporting ----------------------------------------------
+
+
+def test_benchmark_span_reports_degradation_when_mlflow_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fail(name, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if name == "mlflow":
+            raise ImportError("no mlflow here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fail)
+    monkeypatch.delitem(sys.modules, "mlflow", raising=False)
+
+    reported: list[str] = []
+    with benchmark_span("benchmark_run", {"k": "v"}, on_degraded=reported.append) as span:
+        assert span is None
+    assert len(reported) == 1
+    assert "span_skipped" in reported[0]
+
+
+def test_benchmark_span_reports_when_start_span_fails(fake_mlflow) -> None:
+    fake = fake_mlflow("databricks")
+
+    def _boom(name: str):  # noqa: ANN202
+        raise RuntimeError("tracing backend unavailable")
+
+    fake.start_span = _boom  # type: ignore[attr-defined]
+
+    reported: list[str] = []
+    with benchmark_span("benchmark_run", {"k": "v"}, on_degraded=reported.append) as span:
+        assert span is None
+    assert len(reported) == 1
+    assert "span_skipped" in reported[0]

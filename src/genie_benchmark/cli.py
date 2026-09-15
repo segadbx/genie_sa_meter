@@ -144,6 +144,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"Run {run_id} {store.metadata.status}. Wrote:")
     for name, path in written.items():
         print(f"  {name}: {path}")
+    for warning in store.metadata.warnings:
+        _eprint(f"warning: {warning}")
     return 0
 
 

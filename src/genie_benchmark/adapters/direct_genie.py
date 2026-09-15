@@ -316,17 +316,23 @@ def build_default_client(config: Config) -> GenieConversationClient:
     ws = WorkspaceClient(**kwargs)
 
     class _SdkGenieClient:
+        # ``start_conversation``/``create_message`` return a ``Wait[GenieMessage]``
+        # long-running-operation wrapper, not the message itself. We do our own
+        # polling (see ``_poll_until_terminal``) rather than block on the SDK waiter,
+        # so we read the immediate op response off ``.response``. Calling ``as_dict()``
+        # directly on the ``Wait`` object would trip its ``__getattr__`` and raise
+        # ``KeyError('as_dict')``.
         def start_conversation(self, space_id: str, content: str) -> dict[str, Any]:
-            resp = ws.genie.start_conversation(space_id=space_id, content=content)
-            return resp.as_dict()
+            wait = ws.genie.start_conversation(space_id=space_id, content=content)
+            return wait.response.as_dict()
 
         def create_message(
             self, space_id: str, conversation_id: str, content: str
         ) -> dict[str, Any]:
-            resp = ws.genie.create_message(
+            wait = ws.genie.create_message(
                 space_id=space_id, conversation_id=conversation_id, content=content
             )
-            return resp.as_dict()
+            return wait.response.as_dict()
 
         def get_message(
             self, space_id: str, conversation_id: str, message_id: str
