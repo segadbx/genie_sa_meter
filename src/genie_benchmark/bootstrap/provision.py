@@ -53,13 +53,17 @@ class Provisioner:
 
     def run_sql(self, warehouse_id: str, statement: str) -> Any:
         """Execute one SQL statement and block until a terminal state; return the response."""
-        from databricks.sdk.service.sql import StatementState  # lazy
+        from databricks.sdk.service.sql import (  # lazy
+            ExecuteStatementRequestOnWaitTimeout,
+            StatementState,
+        )
 
         resp = self.w.statement_execution.execute_statement(
             warehouse_id=warehouse_id,
             statement=statement,
             wait_timeout="30s",
-            on_wait_timeout="CONTINUE",  # DDL / large inserts exceed the 50s sync cap
+            # DDL / large inserts exceed the 50s sync cap → continue asynchronously and poll.
+            on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
         )
         terminal = {StatementState.SUCCEEDED, StatementState.FAILED, StatementState.CANCELED}
         while resp.status is not None and resp.status.state not in terminal:
