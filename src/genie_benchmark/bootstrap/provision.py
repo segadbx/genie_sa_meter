@@ -16,6 +16,7 @@ import json
 import subprocess
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from . import genie_spaces, oil_gas
@@ -23,6 +24,97 @@ from .emit import build_config_dict, write_config, write_questions
 from .settings import BootstrapSettings
 
 Log = Callable[[str], None]
+
+# Warehouses this bootstrap *creates* are stamped with this tag so teardown can delete only
+# them — never a warehouse the harness merely discovered/reused, and never one the user
+# pinned via ``warehouse.reuse_id``.
+MANAGED_TAG_KEY = "managed_by"
+MANAGED_TAG_VALUE = "genie_benchmark_bootstrap"
+
+
+def warehouse_is_harness_managed(ep: Any) -> bool:
+    """True only for a warehouse carrying the bootstrap's ``managed_by`` creation tag.
+
+    Duck-typed over the SDK ``EndpointInfo`` (``ep.tags.custom_tags`` → key/value pairs) so
+    it is unit-testable without a workspace. Absent/oddly-shaped tags simply yield ``False``
+    — the safe default is to leave a warehouse alone.
+    """
+    tags = getattr(ep, "tags", None)
+    custom = getattr(tags, "custom_tags", None) or []
+    for pair in custom:
+        if (
+            getattr(pair, "key", None) == MANAGED_TAG_KEY
+            and getattr(pair, "value", None) == MANAGED_TAG_VALUE
+        ):
+            return True
+    return False
+
+
+def supervisor_agents_matching(agents: Any, display_name: str) -> list[dict[str, Any]]:
+    """Supervisor-agent entries the harness created, i.e. whose display name is the one it set.
+
+    ``create-supervisor-agent`` stamps the configured ``supervisor.name`` as the agent's
+    ``display_name``, so an exact match on that is the provenance signal — it never selects
+    the workspace's other, differently-named supervisor agents. Each returned entry keeps its
+    resource ``name`` (``supervisor-agents/{id}``), which is what ``delete-supervisor-agent``
+    requires (the display name is *not* a valid delete argument). Pure and unit-testable.
+    """
+    if not isinstance(agents, list):
+        return []
+    return [
+        a
+        for a in agents
+        if isinstance(a, dict) and a.get("display_name") == display_name and a.get("name")
+    ]
+
+
+def remove_local_artifacts(
+    settings: BootstrapSettings, *, log: Log, root: Path | None = None
+) -> list[str]:
+    """Delete bootstrap-emitted files and local run artifacts so a re-run starts clean.
+
+    Removes the emitted config and questions files, the runtime output directory (read
+    from the emitted config when present, else the default ``outputs``), and the local
+    ``./mlruns`` store that off-platform runs create. This is pure filesystem work (no
+    workspace calls), so it is unit-testable; missing paths are ignored and every removal
+    is best-effort.
+    """
+    import shutil
+
+    import yaml
+
+    base = root or Path.cwd()
+
+    config_path = base / settings.emit.config_path
+    # Learn the runtime output_dir from the emitted config before deleting the config.
+    output_dir = "outputs"
+    if config_path.exists():
+        try:
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            output_dir = str(data.get("output_dir") or output_dir)
+        except Exception:  # malformed config — fall back to the default output dir
+            pass
+
+    targets = [
+        config_path,
+        base / settings.emit.questions_path,
+        base / output_dir,
+        base / "mlruns",
+    ]
+    removed: list[str] = []
+    for path in targets:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+                removed.append(str(path))
+                log(f"removed directory {path}")
+            elif path.exists():
+                path.unlink()
+                removed.append(str(path))
+                log(f"removed file {path}")
+        except Exception as exc:
+            log(f"teardown: could not remove {path} ({exc})")
+    return removed
 
 
 class BootstrapError(RuntimeError):
@@ -102,7 +194,11 @@ class Provisioner:
                 "No serverless SQL warehouse found and warehouse.create_if_missing is false. "
                 "Set warehouse.reuse_id or allow creation."
             )
-        from databricks.sdk.service.sql import CreateWarehouseRequestWarehouseType  # lazy
+        from databricks.sdk.service.sql import (  # lazy
+            CreateWarehouseRequestWarehouseType,
+            EndpointTagPair,
+            EndpointTags,
+        )
 
         self.log(f"warehouse: creating serverless '{wh.name}' ({wh.size}) ...")
         created = self.w.warehouses.create(
@@ -112,6 +208,10 @@ class Provisioner:
             auto_stop_mins=10,
             enable_serverless_compute=True,
             warehouse_type=CreateWarehouseRequestWarehouseType.PRO,
+            # Stamp it so teardown can safely identify a warehouse the harness created.
+            tags=EndpointTags(
+                custom_tags=[EndpointTagPair(key=MANAGED_TAG_KEY, value=MANAGED_TAG_VALUE)]
+            ),
         ).result()
         self.log(f"warehouse: created {created.id}")
         return created.id  # type: ignore[return-value]
@@ -169,6 +269,117 @@ class Provisioner:
         except Exception:
             return None
         return f"/Users/{user}/genie-bench-demo" if user else None
+
+    def delete_experiment(self) -> None:
+        """Delete the MLflow experiment (and its traces) this bootstrap created/reused."""
+        path = self.settings.experiment.path or self._default_experiment_path()
+        if not path:
+            self.log("experiment: no path resolved, nothing to delete")
+            return
+        try:
+            import mlflow  # lazy
+
+            mlflow.set_tracking_uri(f"databricks://{self.profile}" if self.profile else "databricks")
+            existing = mlflow.get_experiment_by_name(path)
+            if existing is None:
+                self.log(f"experiment: none named {path} to delete")
+                return
+            mlflow.delete_experiment(existing.experiment_id)
+            self.log(f"experiment: deleted {path} ({existing.experiment_id})")
+        except Exception as exc:  # optional resource — never fail the whole teardown
+            self.log(f"experiment: delete skipped ({exc})")
+
+    # --- Teardown helpers for compute the bootstrap may have created ----------------------
+
+    def _existing_warehouse_id(self) -> str | None:
+        """Return a usable warehouse id for teardown SQL, or None. Never creates one."""
+        if self.settings.warehouse.reuse_id:
+            return self.settings.warehouse.reuse_id
+        serverless = [ep for ep in self.w.warehouses.list() if getattr(ep, "enable_serverless_compute", False)]
+        for ep in serverless:
+            return ep.id  # type: ignore[return-value]
+        for ep in self.w.warehouses.list():  # fall back to any warehouse
+            return ep.id  # type: ignore[return-value]
+        return None
+
+    def delete_created_warehouse(self) -> None:
+        """Delete only a warehouse this bootstrap created, identified by its creation tag.
+
+        Two independent guards ensure we never touch a resource the harness did not create:
+
+        1. If ``warehouse.reuse_id`` is set, the user pinned an existing warehouse to reuse —
+           we skip deletion entirely, without even listing.
+        2. Otherwise we delete only warehouses carrying the ``managed_by`` creation tag. A
+           warehouse that ``resolve_warehouse`` merely *discovered* and reused (or any other
+           workspace warehouse) is untagged and therefore left untouched — even if its name
+           happens to match the configured one.
+        """
+        if self.settings.warehouse.reuse_id:
+            self.log(
+                "warehouse: reuse_id set (reusing an existing warehouse) — never deleting it"
+            )
+            return
+        deleted = 0
+        for ep in self.w.warehouses.list():
+            if not warehouse_is_harness_managed(ep) or not getattr(ep, "id", None):
+                continue
+            self.w.warehouses.delete(id=ep.id)
+            self.log(f"deleted harness-created warehouse '{getattr(ep, 'name', None)}' ({ep.id})")
+            deleted += 1
+        if not deleted:
+            self.log("warehouse: no harness-created (tagged) warehouse found to delete")
+
+    def delete_supervisor(self) -> None:
+        """Delete the harness-created Multi-Agent Supervisor(s) and their serving endpoints.
+
+        ``delete-supervisor-agent`` takes the resource name ``supervisor-agents/{id}`` — not
+        the display name — so we look the agent up by the configured display name first and
+        delete only those matches, leaving any other supervisor agents in the workspace alone.
+        """
+        if not self._supervisor_cli_available():
+            self.log(
+                "supervisor: `databricks supervisor-agents` unavailable; leaving any MAS in "
+                "place. Delete it and its serving endpoint from the Agent Bricks UI if desired."
+            )
+            return
+        display_name = self.settings.supervisor.name
+        try:
+            listed = self._cli_json(["supervisor-agents", "list-supervisor-agents", "-o", "json"])
+        except Exception as exc:
+            self.log(
+                f"supervisor: list failed ({exc}); remove MAS '{display_name}' and its endpoint "
+                "from the Agent Bricks UI if it exists."
+            )
+            return
+
+        agents = listed.get("_") if isinstance(listed, dict) else listed
+        matches = supervisor_agents_matching(agents, display_name)
+        if not matches:
+            self.log(f"supervisor: no MAS named '{display_name}' to delete")
+            return
+
+        for agent in matches:
+            resource_name = str(agent["name"])  # supervisor-agents/{id}
+            try:
+                self._cli_json(["supervisor-agents", "delete-supervisor-agent", resource_name])
+                self.log(f"supervisor: deleted MAS '{display_name}' ({resource_name})")
+            except Exception as exc:  # degrade gracefully — keep going with the endpoint/others
+                self.log(
+                    f"supervisor: delete failed for {resource_name} ({exc}); remove it from the "
+                    "Agent Bricks UI if it still exists."
+                )
+                continue
+            # The MAS's serving endpoint may not be cleaned up automatically — remove it too.
+            endpoint = agent.get("endpoint_name")
+            if endpoint:
+                try:
+                    self.w.serving_endpoints.delete(name=str(endpoint))
+                    self.log(f"supervisor: deleted serving endpoint '{endpoint}'")
+                except Exception as exc:
+                    self.log(
+                        f"supervisor: endpoint '{endpoint}' delete skipped ({exc}); remove it "
+                        "from the UI if it remains."
+                    )
 
     # --- Genie spaces ---------------------------------------------------------------------
 
@@ -383,11 +594,16 @@ def run_bootstrap(
 
 
 def _teardown(prov: Provisioner) -> dict[str, Any]:
-    """Best-effort teardown of resources matching the configured names/titles."""
-    s = prov.settings
-    warehouse_id = s.warehouse.reuse_id or prov.resolve_warehouse()
+    """Best-effort teardown of *every* resource the bootstrap creates, plus local artifacts.
 
-    # Genie spaces (trash by matching title).
+    The goal is a genuinely empty environment so the harness can bootstrap and run again
+    from scratch. Each step is independent and best-effort, so one failure never strands the
+    rest. Ordering matters in one place: dropping the schema needs a warehouse, so a
+    bootstrap-created warehouse is deleted only *after* the SQL DDL has run.
+    """
+    s = prov.settings
+
+    # 1. Genie spaces (trash by matching title).
     try:
         listed = prov._cli_json(["genie", "list-spaces"])
         spaces = listed.get("spaces") or listed.get("_") or []
@@ -399,18 +615,35 @@ def _teardown(prov: Provisioner) -> dict[str, Any]:
     except Exception as exc:
         prov.log(f"teardown: genie spaces skipped ({exc})")
 
-    # Schema (drop cascade), then catalog if we created it.
-    try:
-        prov.run_sql(warehouse_id, f"DROP SCHEMA IF EXISTS {s.fq_schema} CASCADE")
-        prov.log(f"dropped schema {s.fq_schema}")
-        if s.catalog.create:
-            prov.run_sql(warehouse_id, f"DROP CATALOG IF EXISTS {s.catalog.name} CASCADE")
-            prov.log(f"dropped catalog {s.catalog.name}")
-    except Exception as exc:
-        prov.log(f"teardown: schema/catalog skipped ({exc})")
+    # 2. Multi-Agent Supervisor (+ its managed serving endpoint).
+    if s.supervisor.build:
+        prov.delete_supervisor()
 
-    prov.log(
-        "teardown: the Multi-Agent Supervisor and any created SQL warehouse are left in place; "
-        "delete them from the workspace UI if desired."
-    )
-    return {"teardown": True, "schema": s.fq_schema}
+    # 3. MLflow experiment and its traces.
+    prov.delete_experiment()
+
+    # 4. Schema (drop cascade), then catalog if we created it — needs a warehouse.
+    warehouse_id = prov._existing_warehouse_id()
+    if warehouse_id:
+        try:
+            prov.run_sql(warehouse_id, f"DROP SCHEMA IF EXISTS {s.fq_schema} CASCADE")
+            prov.log(f"dropped schema {s.fq_schema}")
+            if s.catalog.create:
+                prov.run_sql(warehouse_id, f"DROP CATALOG IF EXISTS {s.catalog.name} CASCADE")
+                prov.log(f"dropped catalog {s.catalog.name}")
+        except Exception as exc:
+            prov.log(f"teardown: schema/catalog skipped ({exc})")
+    else:
+        prov.log("teardown: no warehouse available to drop schema/catalog (skipped)")
+
+    # 5. A warehouse this bootstrap created (never a reused/shared one).
+    try:
+        prov.delete_created_warehouse()
+    except Exception as exc:
+        prov.log(f"teardown: warehouse delete skipped ({exc})")
+
+    # 6. Local emitted files and run artifacts (config, questions, outputs/, ./mlruns).
+    removed = remove_local_artifacts(s, log=prov.log)
+
+    prov.log("teardown complete — the environment is clean for a fresh bootstrap + run.")
+    return {"teardown": True, "schema": s.fq_schema, "removed_local": removed}

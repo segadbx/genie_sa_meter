@@ -16,6 +16,7 @@ Two concerns live here:
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
@@ -31,12 +32,59 @@ _SPAN_USAGE_KEYS = (
     "token_usage",
     "usage",
 )
+# Span-attribute keys that carry the span *type*. Real MLflow traces store the type under
+# ``mlflow.spanType`` (not a top-level field); OpenInference uses ``span.kind``.
+_SPAN_TYPE_ATTR_KEYS = ("mlflow.spanType", "openinference.span.kind")
+# Trace-metadata keys that carry the aggregated trace-level token usage in real MLflow
+# traces (stored as a JSON-encoded string, not a nested mapping).
+_TRACE_LEVEL_USAGE_KEYS = ("mlflow.trace.tokenUsage",)
 # Span types considered LLM/Chat model calls for child-span summation.
 _LLM_SPAN_TYPES = {"CHAT_MODEL", "LLM", "CHAT", "LLM_MODEL"}
 
 _INPUT_KEYS = ("input_tokens", "prompt_tokens", "input")
 _OUTPUT_KEYS = ("output_tokens", "completion_tokens", "output")
 _TOTAL_KEYS = ("total_tokens", "total")
+
+
+def _decode_maybe_json(value: Any) -> Any:
+    """Decode an MLflow span/trace attribute value.
+
+    Real MLflow traces (OpenTelemetry-based) serialize every attribute value as a
+    JSON-encoded *string*: a span type arrives as ``'"CHAT_MODEL"'`` and a usage block as
+    ``'{"input_tokens": 12, ...}'``. Hand-authored fixtures and some providers instead
+    store the native object. Accept both — if ``value`` is a string that parses as JSON,
+    return the parsed object; otherwise return ``value`` unchanged.
+    """
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (ValueError, TypeError):
+            return value
+    return value
+
+
+def _span_attributes(span: dict[str, Any]) -> dict[str, Any]:
+    attributes = span.get("attributes")
+    return attributes if isinstance(attributes, dict) else {}
+
+
+def _span_type(span: dict[str, Any]) -> str:
+    """Return the upper-cased span type, reading both fixture and real-MLflow shapes.
+
+    Prefer an explicit top-level ``span_type``/``type`` (hand-authored fixtures and some
+    providers), then fall back to the attribute where real serialized traces carry it
+    (``mlflow.spanType``), decoding the JSON-encoded string MLflow uses.
+    """
+    raw = span.get("span_type") or span.get("type")
+    if not raw:
+        attrs = _span_attributes(span)
+        for key in _SPAN_TYPE_ATTR_KEYS:
+            if key in attrs:
+                decoded = _decode_maybe_json(attrs[key])
+                if decoded:
+                    raw = decoded
+                    break
+    return str(raw or "").upper()
 
 
 def _first_int(d: dict[str, Any], keys: tuple[str, ...]) -> int | None:

@@ -10,6 +10,13 @@ import yaml
 
 from genie_benchmark.bootstrap import genie_spaces, oil_gas
 from genie_benchmark.bootstrap.emit import build_config_dict, write_config, write_questions
+from genie_benchmark.bootstrap.provision import (
+    MANAGED_TAG_KEY,
+    MANAGED_TAG_VALUE,
+    remove_local_artifacts,
+    supervisor_agents_matching,
+    warehouse_is_harness_managed,
+)
 from genie_benchmark.bootstrap.settings import (
     BootstrapSettingsError,
     load_bootstrap_settings,
@@ -168,3 +175,87 @@ def test_write_questions_round_trips(tmp_path) -> None:
     write_questions(p, oil_gas.benchmark_questions())
     reloaded = json.loads(p.read_text(encoding="utf-8"))
     assert parse_questions(reloaded)  # valid
+
+
+# --- teardown: local artifact cleanup -------------------------------------------------
+
+def test_remove_local_artifacts_clears_everything(tmp_path) -> None:
+    settings = parse_bootstrap_settings({})  # default config.yaml / questions.json paths
+    # Emitted files + a custom output dir declared inside the config + a local mlruns store.
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"output_dir": "runs_out"}), encoding="utf-8")
+    (tmp_path / "questions.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "runs_out").mkdir()
+    (tmp_path / "runs_out" / "benchmark_results.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "mlruns" / "0").mkdir(parents=True)
+
+    logs: list[str] = []
+    removed = remove_local_artifacts(settings, log=logs.append, root=tmp_path)
+
+    assert not (tmp_path / "config.yaml").exists()
+    assert not (tmp_path / "questions.json").exists()
+    assert not (tmp_path / "runs_out").exists()  # output_dir read from the config
+    assert not (tmp_path / "mlruns").exists()
+    assert len(removed) == 4
+
+
+def test_remove_local_artifacts_ignores_missing(tmp_path) -> None:
+    settings = parse_bootstrap_settings({})
+    # Nothing exists — must be a no-op that returns an empty list, not an error.
+    removed = remove_local_artifacts(settings, log=lambda _m: None, root=tmp_path)
+    assert removed == []
+
+
+# --- teardown: only harness-created warehouses are deletable --------------------------
+
+def _fake_warehouse(tag_pairs=None):
+    """Duck-typed stand-in for the SDK EndpointInfo (ep.tags.custom_tags)."""
+    from types import SimpleNamespace
+
+    pairs = [SimpleNamespace(key=k, value=v) for k, v in (tag_pairs or [])]
+    return SimpleNamespace(id="wh1", name="genie-bench-demo", tags=SimpleNamespace(custom_tags=pairs))
+
+
+def test_warehouse_is_managed_only_with_creation_tag() -> None:
+    tagged = _fake_warehouse([(MANAGED_TAG_KEY, MANAGED_TAG_VALUE)])
+    assert warehouse_is_harness_managed(tagged) is True
+
+
+def test_warehouse_not_managed_without_tag_even_if_name_matches() -> None:
+    # Same configured name, but no creation tag → discovered/reused, must not be deletable.
+    untagged = _fake_warehouse([])
+    assert warehouse_is_harness_managed(untagged) is False
+    # A different tag value must also not qualify.
+    other = _fake_warehouse([(MANAGED_TAG_KEY, "someone_else")])
+    assert warehouse_is_harness_managed(other) is False
+
+
+def test_warehouse_managed_check_tolerates_absent_tags() -> None:
+    from types import SimpleNamespace
+
+    assert warehouse_is_harness_managed(SimpleNamespace(id="x", tags=None)) is False
+    assert warehouse_is_harness_managed(SimpleNamespace(id="x")) is False
+
+
+# --- teardown: supervisor agents selected by display name, deleted by resource name ---
+
+def test_supervisor_match_selects_only_configured_display_name() -> None:
+    agents = [
+        {"display_name": "supervisor-agent-2026-05-17", "name": "supervisor-agents/aaa"},
+        {"display_name": "Upstream Benchmark MAS", "name": "supervisor-agents/bbb",
+         "endpoint_name": "mas-bbb-endpoint"},
+        {"display_name": "Upstream Benchmark MAS", "name": "supervisor-agents/ccc"},  # dup
+        {"display_name": "Other MAS", "name": "supervisor-agents/ddd"},
+    ]
+    matches = supervisor_agents_matching(agents, "Upstream Benchmark MAS")
+    # Only the two matching the configured display name, and the delete uses the resource name.
+    assert [m["name"] for m in matches] == ["supervisor-agents/bbb", "supervisor-agents/ccc"]
+
+
+def test_supervisor_match_ignores_entries_without_resource_name_or_bad_shape() -> None:
+    agents = [
+        {"display_name": "Upstream Benchmark MAS"},  # no resource name → not deletable
+        "not-a-dict",
+        {"display_name": "Upstream Benchmark MAS", "name": ""},  # empty name → skipped
+    ]
+    assert supervisor_agents_matching(agents, "Upstream Benchmark MAS") == []
+    assert supervisor_agents_matching(None, "Upstream Benchmark MAS") == []

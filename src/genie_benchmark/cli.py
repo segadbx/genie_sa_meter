@@ -184,7 +184,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_boot = sub.add_parser("bootstrap", help="Provision the demo Databricks resources and emit config + questions.")
     p_boot.add_argument("--config", required=True, help="Bootstrap settings file (bootstrap.yaml).")
     p_boot.add_argument("--profile", default=None, help="Databricks profile to provision into.")
-    p_boot.add_argument("--teardown", action="store_true", help="Best-effort removal of the demo resources.")
+    p_boot.add_argument(
+        "--teardown",
+        action="store_true",
+        help=(
+            "Best-effort removal of ALL demo resources (Genie spaces, supervisor MAS, MLflow "
+            "experiment, schema/catalog, a bootstrap-created warehouse) plus local artifacts "
+            "(config, questions, outputs/, ./mlruns) for a clean re-run."
+        ),
+    )
     p_boot.set_defaults(func=cmd_bootstrap)
 
     p_pre = sub.add_parser("preflight", help="Validate configuration and questions.")
